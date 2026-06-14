@@ -1,0 +1,235 @@
+
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog
+import json
+import os
+import re
+from datetime import datetime
+from collections import Counter
+
+DATA_FILE = "notes.json"
+
+class Note:
+    def __init__(self, id=None, title="", content="", tags=None, color="#ffffff", created=None, modified=None):
+        self.id = id or int(datetime.now().timestamp() * 1000)
+        self.title = title
+        self.content = content
+        self.tags = tags if tags is not None else []
+        self.color = color
+        self.created = created or datetime.now().isoformat()
+        self.modified = modified or datetime.now().isoformat()
+    
+    def to_dict(self):
+        return {
+            "id": self.id, "title": self.title, "content": self.content,
+            "tags": self.tags, "color": self.color,
+            "created": self.created, "modified": self.modified
+        }
+    
+    @classmethod
+    def from_dict(cls, data):
+        return cls(**data)
+
+class NotesApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("📝 Заметки с тегами")
+        self.root.geometry("1100x650")
+        self.root.configure(bg="#f5f5f5")
+        
+        self.notes = []
+        self.current_note_id = None
+        self.all_tags = set()
+        self.load_data()
+        
+        self.create_widgets()
+        self.refresh_note_list()
+        self.update_tag_cloud()
+        self.start_auto_save()
+    
+    def load_data(self):
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                self.notes = [Note.from_dict(n) for n in data]
+                for note in self.notes:
+                    self.all_tags.update(note.tags)
+        else:
+            # Пример заметки
+            sample = Note(title="Добро пожаловать!", content="Это пример заметки с тегами. Нажмите + чтобы добавить.", tags=["пример", "welcome"])
+            self.notes.append(sample)
+            self.all_tags.update(sample.tags)
+            self.save_data()
+    
+    def save_data(self):
+        with open(DATA_FILE, 'w', encoding='utf-8') as f:
+            json.dump([n.to_dict() for n in self.notes], f, indent=2, ensure_ascii=False)
+    
+    def start_auto_save(self):
+        def auto_save():
+            self.save_data()
+            self.root.after(30000, auto_save)
+        self.root.after(30000, auto_save)
+    
+    def create_widgets(self):
+        # Левая панель: список заметок
+        left_frame = tk.Frame(self.root, bg="#e0e0e0", width=250)
+        left_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
+        tk.Label(left_frame, text="📌 Заметки", font=('Arial', 12, 'bold'), bg="#e0e0e0").pack(pady=5)
+        self.search_var = tk.StringVar()
+        self.search_var.trace('w', lambda *a: self.refresh_note_list())
+        search_entry = tk.Entry(left_frame, textvariable=self.search_var, width=25)
+        search_entry.pack(pady=5, padx=5, fill=tk.X)
+        self.note_listbox = tk.Listbox(left_frame, width=30, height=25, bg="white", selectbackground="#3498db")
+        self.note_listbox.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.note_listbox.bind("<<ListboxSelect>>", self.on_note_selected)
+        
+        btn_frame = tk.Frame(left_frame, bg="#e0e0e0")
+        btn_frame.pack(fill=tk.X, pady=5)
+        tk.Button(btn_frame, text="➕ Новая", command=self.new_note, bg="#2ecc71", fg="white").pack(side=tk.LEFT, padx=2)
+        tk.Button(btn_frame, text="🗑 Удалить", command=self.delete_note, bg="#e74c3c", fg="white").pack(side=tk.LEFT, padx=2)
+        
+        # Облако тегов
+        tag_frame = tk.LabelFrame(left_frame, text="🏷️ Теги", bg="#e0e0e0", fg="#2c3e50")
+        tag_frame.pack(fill=tk.X, padx=5, pady=5)
+        self.tag_container = tk.Frame(tag_frame, bg="#e0e0e0")
+        self.tag_container.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Правая панель: редактор заметки
+        right_frame = tk.Frame(self.root, bg="white")
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Верхняя часть редактора
+        top_editor = tk.Frame(right_frame, bg="white")
+        top_editor.pack(fill=tk.X, padx=10, pady=5)
+        tk.Label(top_editor, text="Заголовок:", bg="white").pack(side=tk.LEFT)
+        self.title_entry = tk.Entry(top_editor, width=50, font=('Arial', 12))
+        self.title_entry.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
+        self.title_entry.bind("<KeyRelease>", self.on_content_changed)
+        
+        # Теги
+        tag_editor = tk.Frame(right_frame, bg="white")
+        tag_editor.pack(fill=tk.X, padx=10, pady=5)
+        tk.Label(tag_editor, text="Теги (через пробел):", bg="white").pack(side=tk.LEFT)
+        self.tags_entry = tk.Entry(tag_editor, width=40)
+        self.tags_entry.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
+        self.tags_entry.bind("<KeyRelease>", self.on_content_changed)
+        
+        # Цвет
+        color_frame = tk.Frame(right_frame, bg="white")
+        color_frame.pack(fill=tk.X, padx=10, pady=5)
+        tk.Label(color_frame, text="Цвет заметки:", bg="white").pack(side=tk.LEFT)
+        self.color_var = tk.StringVar(value="#ffffff")
+        colors = ["#ffffff", "#ffcccc", "#ccffcc", "#ccccff", "#ffffcc", "#ffccff"]
+        for c in colors:
+            rb = tk.Radiobutton(color_frame, bg=c, variable=self.color_var, value=c, command=self.on_content_changed, width=2)
+            rb.pack(side=tk.LEFT, padx=2)
+        
+        # Текст заметки
+        self.text_area = tk.Text(right_frame, wrap=tk.WORD, font=('Arial', 11), undo=True)
+        self.text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.text_area.bind("<KeyRelease>", self.on_content_changed)
+        
+        # Статус
+        self.status = tk.Label(right_frame, text="", bg="white", fg="gray", anchor=tk.W)
+        self.status.pack(fill=tk.X, padx=10, pady=2)
+    
+    def refresh_note_list(self):
+        search = self.search_var.get().lower()
+        self.note_listbox.delete(0, tk.END)
+        filtered = self.notes
+        if search:
+            filtered = [n for n in filtered if search in n.title.lower() or search in n.content.lower() or any(search in tag.lower() for tag in n.tags)]
+        for note in filtered:
+            display = note.title[:40] + ("..." if len(note.title)>40 else "")
+            self.note_listbox.insert(tk.END, f"{display}  [{','.join(note.tags[:2])}]")
+            # сохраним id в атрибуте
+        self.note_listbox.bind("<<ListboxSelect>>", self.on_note_selected)
+        # store ids mapping (проще через список)
+        self.filtered_notes = filtered
+    
+    def on_note_selected(self, event):
+        selection = self.note_listbox.curselection()
+        if not selection:
+            return
+        idx = selection[0]
+        if idx < len(self.filtered_notes):
+            note = self.filtered_notes[idx]
+            self.current_note_id = note.id
+            self.display_note(note)
+    
+    def display_note(self, note):
+        self.title_entry.delete(0, tk.END)
+        self.title_entry.insert(0, note.title)
+        self.tags_entry.delete(0, tk.END)
+        self.tags_entry.insert(0, " ".join(note.tags))
+        self.color_var.set(note.color)
+        self.text_area.delete(1.0, tk.END)
+        self.text_area.insert(1.0, note.content)
+        self.root.configure(bg=note.color)
+        self.update_tag_cloud()
+    
+    def on_content_changed(self, event=None):
+        if self.current_note_id is None:
+            return
+        # Обновить текущую заметку
+        note = next((n for n in self.notes if n.id == self.current_note_id), None)
+        if note:
+            note.title = self.title_entry.get().strip()
+            note.content = self.text_area.get(1.0, tk.END).strip()
+            tags_text = self.tags_entry.get().strip()
+            new_tags = [t.strip() for t in tags_text.split() if t.strip()]
+            note.tags = new_tags
+            note.color = self.color_var.get()
+            note.modified = datetime.now().isoformat()
+            # Обновить глобальные теги
+            self.all_tags.update(new_tags)
+            self.save_data()
+            self.refresh_note_list()
+            self.update_tag_cloud()
+            self.status.config(text=f"Сохранено {datetime.now().strftime('%H:%M:%S')}")
+    
+    def new_note(self):
+        new_note = Note(title="Новая заметка", content="", tags=[])
+        self.notes.append(new_note)
+        self.current_note_id = new_note.id
+        self.save_data()
+        self.refresh_note_list()
+        self.display_note(new_note)
+    
+    def delete_note(self):
+        if self.current_note_id is None:
+            return
+        if messagebox.askyesno("Удаление", "Удалить заметку?"):
+            self.notes = [n for n in self.notes if n.id != self.current_note_id]
+            self.save_data()
+            self.current_note_id = None
+            self.title_entry.delete(0, tk.END)
+            self.tags_entry.delete(0, tk.END)
+            self.text_area.delete(1.0, tk.END)
+            self.refresh_note_list()
+            self.update_tag_cloud()
+            self.status.config(text="Заметка удалена")
+    
+    def update_tag_cloud(self):
+        # Очистить
+        for widget in self.tag_container.winfo_children():
+            widget.destroy()
+        # Подсчет частоты тегов
+        tag_counts = Counter()
+        for note in self.notes:
+            tag_counts.update(note.tags)
+        # Отобразить кнопки тегов
+        for tag, count in tag_counts.most_common(20):
+            btn = tk.Button(self.tag_container, text=f"{tag} ({count})", bg="#ecf0f1", fg="#2c3e50",
+                            command=lambda t=tag: self.filter_by_tag(t), relief=tk.FLAT, padx=5)
+            btn.pack(anchor=tk.W, pady=2, fill=tk.X)
+    
+    def filter_by_tag(self, tag):
+        self.search_var.set(tag)
+        self.refresh_note_list()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = NotesApp(root)
+    root.mainloop()
