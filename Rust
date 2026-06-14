@@ -1,0 +1,184 @@
+// notes.rs - Заметки с тегами на Rust (CLI + JSON)
+use serde::{Serialize, Deserialize};
+use std::fs;
+use std::io::{self, Write};
+use std::collections::HashSet;
+use chrono::Local;
+
+#[derive(Serialize, Deserialize, Clone)]
+struct Note {
+    id: u64,
+    title: String,
+    content: String,
+    tags: Vec<String>,
+    color: String,
+    created: String,
+    modified: String,
+}
+
+const DATA_FILE: &str = "notes.json";
+
+fn load_notes() -> Vec<Note> {
+    if let Ok(data) = fs::read_to_string(DATA_FILE) {
+        serde_json::from_str(&data).unwrap_or_else(|_| vec![])
+    } else {
+        vec![
+            Note {
+                id: 1,
+                title: "Пример".to_string(),
+                content: "Это пример заметки с тегами".to_string(),
+                tags: vec!["пример".to_string()],
+                color: "#ffffff".to_string(),
+                created: Local::now().to_rfc3339(),
+                modified: Local::now().to_rfc3339(),
+            }
+        ]
+    }
+}
+
+fn save_notes(notes: &Vec<Note>) {
+    let data = serde_json::to_string_pretty(notes).unwrap();
+    fs::write(DATA_FILE, data).unwrap();
+}
+
+fn next_id(notes: &Vec<Note>) -> u64 {
+    notes.iter().map(|n| n.id).max().unwrap_or(0) + 1
+}
+
+fn read_line(prompt: &str) -> String {
+    print!("{}", prompt);
+    io::stdout().flush().unwrap();
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+    input.trim().to_string()
+}
+
+fn list_notes(notes: &Vec<Note>, filter_tag: Option<&str>, search: Option<&str>) {
+    let mut filtered = notes.clone();
+    if let Some(tag) = filter_tag {
+        filtered.retain(|n| n.tags.iter().any(|t| t == tag));
+    }
+    if let Some(term) = search {
+        let term_low = term.to_lowercase();
+        filtered.retain(|n| n.title.to_lowercase().contains(&term_low) || n.content.to_lowercase().contains(&term_low));
+    }
+    if filtered.is_empty() {
+        println!("Нет заметок.");
+        return;
+    }
+    println!("\n{:-<60}", "");
+    for n in filtered {
+        println!("ID: {} | {} | Теги: [{}]", n.id, n.title, n.tags.join(", "));
+    }
+    println!("{:-<60}", "");
+}
+
+fn view_note(notes: &Vec<Note>, id: u64) {
+    if let Some(n) = notes.iter().find(|n| n.id == id) {
+        println!("\n--- Заметка {} ---", n.id);
+        println!("Заголовок: {}", n.title);
+        println!("Теги: {}", n.tags.join(", "));
+        println!("Содержание:\n{}", n.content);
+        println!("Создана: {}", n.created);
+        println!("Изменена: {}", n.modified);
+    } else {
+        println!("Заметка не найдена");
+    }
+}
+
+fn add_note(notes: &mut Vec<Note>) {
+    let title = read_line("Заголовок: ");
+    if title.is_empty() { println!("Заголовок обязателен"); return; }
+    let content = read_line("Содержание: ");
+    let tags_str = read_line("Теги (через пробел): ");
+    let tags: Vec<String> = tags_str.split_whitespace().map(|s| s.to_string()).collect();
+    let id = next_id(notes);
+    let now = Local::now().to_rfc3339();
+    notes.push(Note {
+        id, title, content, tags, color: "#ffffff".to_string(), created: now.clone(), modified: now,
+    });
+    save_notes(notes);
+    println!("Заметка добавлена (ID: {})", id);
+}
+
+fn edit_note(notes: &mut Vec<Note>, id: u64) {
+    let idx = notes.iter().position(|n| n.id == id);
+    if let Some(idx) = idx {
+        let mut n = notes[idx].clone();
+        let new_title = read_line(&format!("Заголовок ({}): ", n.title));
+        if !new_title.is_empty() { n.title = new_title; }
+        let new_content = read_line(&format!("Содержание ({} символов): ", n.content.len()));
+        if !new_content.is_empty() { n.content = new_content; }
+        let new_tags = read_line(&format!("Теги ({}): ", n.tags.join(" ")));
+        if !new_tags.is_empty() { n.tags = new_tags.split_whitespace().map(|s| s.to_string()).collect(); }
+        n.modified = Local::now().to_rfc3339();
+        notes[idx] = n;
+        save_notes(notes);
+        println!("Заметка обновлена");
+    } else {
+        println!("Не найдено");
+    }
+}
+
+fn delete_note(notes: &mut Vec<Note>, id: u64) {
+    let len = notes.len();
+    notes.retain(|n| n.id != id);
+    if notes.len() < len {
+        save_notes(notes);
+        println!("Заметка удалена");
+    } else {
+        println!("Не найдено");
+    }
+}
+
+fn main() {
+    let mut notes = load_notes();
+    loop {
+        println!("\n=== Заметки с тегами ===");
+        println!("1. Список всех");
+        println!("2. Поиск/фильтр по тегу");
+        println!("3. Просмотр заметки");
+        println!("4. Добавить");
+        println!("5. Редактировать");
+        println!("6. Удалить");
+        println!("7. Статистика тегов");
+        println!("0. Выход");
+        let choice = read_line("Выбор: ");
+        match choice.as_str() {
+            "1" => list_notes(&notes, None, None),
+            "2" => {
+                let tag = read_line("Тег для фильтрации: ");
+                list_notes(&notes, if tag.is_empty() { None } else { Some(&tag) }, None);
+            }
+            "3" => {
+                let id_str = read_line("ID заметки: ");
+                if let Ok(id) = id_str.parse() { view_note(&notes, id); } else { println!("Неверный ID"); }
+            }
+            "4" => add_note(&mut notes),
+            "5" => {
+                let id_str = read_line("ID для редактирования: ");
+                if let Ok(id) = id_str.parse() { edit_note(&mut notes, id); } else { println!("Неверный ID"); }
+            }
+            "6" => {
+                let id_str = read_line("ID для удаления: ");
+                if let Ok(id) = id_str.parse() { delete_note(&mut notes, id); } else { println!("Неверный ID"); }
+            }
+            "7" => {
+                let mut tag_count = std::collections::HashMap::new();
+                for n in &notes {
+                    for t in &n.tags {
+                        *tag_count.entry(t).or_insert(0) += 1;
+                    }
+                }
+                let mut vec: Vec<_> = tag_count.into_iter().collect();
+                vec.sort_by(|a,b| b.1.cmp(&a.1));
+                println!("Популярные теги:");
+                for (tag, count) in vec.iter().take(10) {
+                    println!("  {}: {}", tag, count);
+                }
+            }
+            "0" => break,
+            _ => println!("Неизвестная команда"),
+        }
+    }
+}
