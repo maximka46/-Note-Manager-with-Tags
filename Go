@@ -1,0 +1,156 @@
+// notes.go - Заметки с тегами на Go (веб-сервер + JSON)
+package main
+
+import (
+	"encoding/json"
+	"html/template"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+)
+
+type Note struct {
+	ID       int      `json:"id"`
+	Title    string   `json:"title"`
+	Content  string   `json:"content"`
+	Tags     []string `json:"tags"`
+	Color    string   `json:"color"`
+	Created  string   `json:"created"`
+	Modified string   `json:"modified"`
+}
+
+var notes []Note
+var nextID = 1
+const dataFile = "notes.json"
+
+func loadNotes() {
+	data, err := ioutil.ReadFile(dataFile)
+	if err != nil {
+		notes = []Note{
+			{ID: 1, Title: "Пример заметки", Content: "Здесь можно писать текст.", Tags: []string{"пример"}, Color: "#ffffff", Created: time.Now().Format(time.RFC3339), Modified: time.Now().Format(time.RFC3339)},
+		}
+		nextID = 2
+		return
+	}
+	json.Unmarshal(data, &notes)
+	nextID = 1
+	for _, n := range notes {
+		if n.ID >= nextID {
+			nextID = n.ID + 1
+		}
+	}
+}
+
+func saveNotes() {
+	data, _ := json.MarshalIndent(notes, "", "  ")
+	ioutil.WriteFile(dataFile, data, 0644)
+}
+
+func main() {
+	loadNotes()
+	http.HandleFunc("/", handleIndex)
+	http.HandleFunc("/api/notes", handleNotes)
+	http.HandleFunc("/api/notes/", handleNoteByID)
+	log.Println("Сервер запущен на http://localhost:8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+func handleIndex(w http.ResponseWriter, r *http.Request) {
+	tmpl := template.Must(template.ParseFiles("notes.html"))
+	tmpl.Execute(w, nil)
+}
+
+func handleNotes(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		search := r.URL.Query().Get("search")
+		tag := r.URL.Query().Get("tag")
+		filtered := notes
+		if search != "" {
+			lower := strings.ToLower(search)
+			filtered = []Note{}
+			for _, n := range notes {
+				if strings.Contains(strings.ToLower(n.Title), lower) ||
+					strings.Contains(strings.ToLower(n.Content), lower) ||
+					tagContains(n.Tags, lower) {
+					filtered = append(filtered, n)
+				}
+			}
+		} else if tag != "" {
+			filtered = []Note{}
+			for _, n := range notes {
+				if tagContains(n.Tags, tag) {
+					filtered = append(filtered, n)
+				}
+			}
+		}
+		json.NewEncoder(w).Encode(filtered)
+	case http.MethodPost:
+		var note Note
+		json.NewDecoder(r.Body).Decode(&note)
+		note.ID = nextID
+		nextID++
+		note.Created = time.Now().Format(time.RFC3339)
+		note.Modified = note.Created
+		notes = append(notes, note)
+		saveNotes()
+		json.NewEncoder(w).Encode(note)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func handleNoteByID(w http.ResponseWriter, r *http.Request) {
+	idStr := strings.TrimPrefix(r.URL.Path, "/api/notes/")
+	var id int
+	_, _ = fmt.Sscanf(idStr, "%d", &id)
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case http.MethodGet:
+		for _, n := range notes {
+			if n.ID == id {
+				json.NewEncoder(w).Encode(n)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	case http.MethodPut:
+		var updated Note
+		json.NewDecoder(r.Body).Decode(&updated)
+		for i, n := range notes {
+			if n.ID == id {
+				updated.ID = id
+				updated.Created = n.Created
+				updated.Modified = time.Now().Format(time.RFC3339)
+				notes[i] = updated
+				saveNotes()
+				json.NewEncoder(w).Encode(updated)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	case http.MethodDelete:
+		for i, n := range notes {
+			if n.ID == id {
+				notes = append(notes[:i], notes[i+1:]...)
+				saveNotes()
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+func tagContains(tags []string, sub string) bool {
+	for _, t := range tags {
+		if strings.Contains(strings.ToLower(t), sub) {
+			return true
+		}
+	}
+	return false
+}
