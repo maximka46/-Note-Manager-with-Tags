@@ -1,0 +1,277 @@
+<!-- notes.html - Заметки с тегами на JavaScript (IndexedDB) -->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📝 Заметки с тегами</title>
+    <style>
+        * { box-sizing: border-box; font-family: 'Segoe UI', system-ui; }
+        body { margin: 0; background: #f4f7fb; display: flex; height: 100vh; overflow: hidden; }
+        .sidebar { width: 280px; background: #2c3e50; color: white; display: flex; flex-direction: column; padding: 15px; }
+        .sidebar h2 { margin-top: 0; font-size: 1.4rem; }
+        .search-box { width: 100%; padding: 8px; border-radius: 20px; border: none; margin-bottom: 15px; }
+        .note-list { flex: 1; overflow-y: auto; }
+        .note-item { background: #34495e; margin-bottom: 8px; padding: 10px; border-radius: 12px; cursor: pointer; transition: 0.1s; }
+        .note-item:hover { background: #3b5998; }
+        .note-title { font-weight: bold; }
+        .note-tags { font-size: 11px; color: #bdc3c7; margin-top: 5px; }
+        .tag-cloud { margin-top: 20px; border-top: 1px solid #466; padding-top: 10px; }
+        .tag-btn { background: #1abc9c; border: none; color: white; border-radius: 20px; padding: 4px 10px; margin: 3px; cursor: pointer; font-size: 12px; }
+        .editor { flex: 1; background: white; display: flex; flex-direction: column; padding: 20px; overflow-y: auto; }
+        .editor input, .editor textarea { width: 100%; margin-bottom: 12px; padding: 10px; border: 1px solid #ddd; border-radius: 12px; font-size: 14px; }
+        .editor textarea { flex: 1; resize: none; }
+        .toolbar { display: flex; gap: 10px; margin-bottom: 15px; }
+        button { background: #3498db; color: white; border: none; padding: 8px 16px; border-radius: 20px; cursor: pointer; }
+        button.danger { background: #e74c3c; }
+        .color-picker { display: flex; gap: 8px; margin-bottom: 15px; }
+        .color-option { width: 30px; height: 30px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; }
+        .color-option.selected { border-color: #2c3e50; transform: scale(1.1); }
+        .status { margin-top: 8px; font-size: 12px; color: gray; }
+    </style>
+</head>
+<body>
+<div class="sidebar">
+    <h2>📝 Заметки</h2>
+    <input type="text" id="searchInput" class="search-box" placeholder="Поиск по тексту, тегам...">
+    <div class="note-list" id="noteList"></div>
+    <div class="tag-cloud" id="tagCloud"></div>
+    <button id="newNoteBtn" style="margin-top:15px;">➕ Новая заметка</button>
+</div>
+<div class="editor" id="editor">
+    <div class="toolbar">
+        <button id="deleteNoteBtn" class="danger">🗑 Удалить</button>
+        <button id="exportBtn">📎 Экспорт JSON</button>
+        <input type="file" id="importInput" accept=".json" style="display:none">
+        <button id="importBtn">📂 Импорт JSON</button>
+    </div>
+    <input type="text" id="titleInput" placeholder="Заголовок">
+    <input type="text" id="tagsInput" placeholder="Теги (через пробел)">
+    <div class="color-picker" id="colorPicker"></div>
+    <textarea id="contentInput" placeholder="Содержимое заметки..."></textarea>
+    <div class="status" id="statusMsg"></div>
+</div>
+<script>
+    let db;
+    let currentNoteId = null;
+    const colorOptions = ["#ffffff", "#ffcccc", "#ccffcc", "#ccccff", "#ffffcc", "#ffccff", "#d4e6f1"];
+
+    // Инициализация IndexedDB
+    const request = indexedDB.open("NotesDB", 1);
+    request.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains("notes")) {
+            const store = db.createObjectStore("notes", { keyPath: "id", autoIncrement: true });
+            store.createIndex("title", "title");
+            store.createIndex("tags", "tags", { multiEntry: true });
+        }
+    };
+    request.onsuccess = (e) => {
+        db = e.target.result;
+        loadNotesAndRender();
+        initColorPicker();
+    };
+    request.onerror = (e) => console.error("IndexedDB error", e);
+
+    async function loadNotesAndRender() {
+        const notes = await getAllNotes();
+        renderNoteList(notes);
+        renderTagCloud(notes);
+        if (notes.length > 0 && !currentNoteId) {
+            currentNoteId = notes[0].id;
+            displayNote(notes[0]);
+        } else if (currentNoteId) {
+            const note = notes.find(n => n.id === currentNoteId);
+            if (note) displayNote(note);
+            else currentNoteId = null;
+        }
+    }
+
+    async function getAllNotes() {
+        return new Promise((resolve) => {
+            const tx = db.transaction("notes", "readonly");
+            const store = tx.objectStore("notes");
+            const req = store.getAll();
+            req.onsuccess = () => resolve(req.result || []);
+        });
+    }
+
+    function renderNoteList(notes) {
+        const search = document.getElementById("searchInput").value.toLowerCase();
+        let filtered = notes;
+        if (search) {
+            filtered = notes.filter(n => 
+                n.title.toLowerCase().includes(search) ||
+                n.content.toLowerCase().includes(search) ||
+                (n.tags && n.tags.some(t => t.toLowerCase().includes(search)))
+            );
+        }
+        const container = document.getElementById("noteList");
+        container.innerHTML = "";
+        filtered.forEach(n => {
+            const div = document.createElement("div");
+            div.className = "note-item";
+            if (currentNoteId === n.id) div.style.background = "#3b5998";
+            div.innerHTML = `<div class="note-title">${escapeHtml(n.title.substring(0, 40))}</div>
+                             <div class="note-tags">${(n.tags || []).map(t => `#${t}`).join(" ")}</div>`;
+            div.onclick = () => { currentNoteId = n.id; displayNote(n); loadNotesAndRender(); };
+            container.appendChild(div);
+        });
+        if (filtered.length === 0) container.innerHTML = "<div style='color:#bbb;padding:10px'>Нет заметок</div>";
+    }
+
+    async function renderTagCloud(notes) {
+        const tagCount = new Map();
+        notes.forEach(n => {
+            (n.tags || []).forEach(t => tagCount.set(t, (tagCount.get(t) || 0) + 1));
+        });
+        const container = document.getElementById("tagCloud");
+        container.innerHTML = "<strong>🏷️ Популярные теги</strong><br>";
+        for (let [tag, count] of Array.from(tagCount.entries()).sort((a,b) => b[1]-a[1]).slice(0,15)) {
+            const btn = document.createElement("button");
+            btn.className = "tag-btn";
+            btn.textContent = `${tag} (${count})`;
+            btn.onclick = () => {
+                document.getElementById("searchInput").value = tag;
+                loadNotesAndRender();
+            };
+            container.appendChild(btn);
+        }
+    }
+
+    function displayNote(note) {
+        document.getElementById("titleInput").value = note.title || "";
+        document.getElementById("tagsInput").value = (note.tags || []).join(" ");
+        document.getElementById("contentInput").value = note.content || "";
+        document.getElementById("editor").style.backgroundColor = note.color || "#ffffff";
+        // отметить выбранный цвет
+        document.querySelectorAll(".color-option").forEach(el => {
+            if (el.dataset.color === (note.color || "#ffffff")) el.classList.add("selected");
+            else el.classList.remove("selected");
+        });
+        currentNoteId = note.id;
+        document.getElementById("statusMsg").innerText = `Загружено: ${note.modified ? new Date(note.modified).toLocaleString() : ""}`;
+    }
+
+    async function saveCurrentNote() {
+        if (!currentNoteId) return;
+        const title = document.getElementById("titleInput").value.trim() || "Без названия";
+        const tagsRaw = document.getElementById("tagsInput").value;
+        const tags = tagsRaw.split(/\s+/).filter(t => t);
+        const content = document.getElementById("contentInput").value;
+        const color = document.querySelector(".color-option.selected")?.dataset.color || "#ffffff";
+        const tx = db.transaction("notes", "readwrite");
+        const store = tx.objectStore("notes");
+        const note = await new Promise(resolve => {
+            const req = store.get(currentNoteId);
+            req.onsuccess = () => resolve(req.result || {});
+        });
+        note.title = title;
+        note.tags = tags;
+        note.content = content;
+        note.color = color;
+        note.modified = new Date().toISOString();
+        if (!note.created) note.created = note.modified;
+        store.put(note);
+        await tx.complete;
+        loadNotesAndRender();
+        document.getElementById("statusMsg").innerText = "Сохранено " + new Date().toLocaleTimeString();
+    }
+
+    async function newNote() {
+        const newNote = {
+            title: "Новая заметка",
+            content: "",
+            tags: [],
+            color: "#ffffff",
+            created: new Date().toISOString(),
+            modified: new Date().toISOString()
+        };
+        const tx = db.transaction("notes", "readwrite");
+        const store = tx.objectStore("notes");
+        const req = store.add(newNote);
+        req.onsuccess = async () => {
+            currentNoteId = req.result;
+            await loadNotesAndRender();
+            const notes = await getAllNotes();
+            const note = notes.find(n => n.id === currentNoteId);
+            if (note) displayNote(note);
+        };
+    }
+
+    async function deleteNote() {
+        if (!currentNoteId) return;
+        if (confirm("Удалить заметку?")) {
+            const tx = db.transaction("notes", "readwrite");
+            tx.objectStore("notes").delete(currentNoteId);
+            await tx.complete;
+            currentNoteId = null;
+            document.getElementById("titleInput").value = "";
+            document.getElementById("tagsInput").value = "";
+            document.getElementById("contentInput").value = "";
+            loadNotesAndRender();
+            document.getElementById("editor").style.backgroundColor = "#ffffff";
+        }
+    }
+
+    function initColorPicker() {
+        const container = document.getElementById("colorPicker");
+        container.innerHTML = "";
+        colorOptions.forEach(col => {
+            const div = document.createElement("div");
+            div.className = "color-option";
+            div.style.backgroundColor = col;
+            div.dataset.color = col;
+            div.onclick = () => {
+                document.querySelectorAll(".color-option").forEach(c => c.classList.remove("selected"));
+                div.classList.add("selected");
+                document.getElementById("editor").style.backgroundColor = col;
+                saveCurrentNote();
+            };
+            container.appendChild(div);
+        });
+    }
+
+    // Экспорт/импорт
+    async function exportJSON() {
+        const notes = await getAllNotes();
+        const dataStr = JSON.stringify(notes, null, 2);
+        const blob = new Blob([dataStr], {type: "application/json"});
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = "notes_backup.json";
+        a.click();
+        URL.revokeObjectURL(a.href);
+    }
+    function importJSON(file) {
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            const imported = JSON.parse(e.target.result);
+            const tx = db.transaction("notes", "readwrite");
+            const store = tx.objectStore("notes");
+            for (let note of imported) {
+                if (!note.id) note.id = undefined; // автоинкремент
+                store.put(note);
+            }
+            await tx.complete;
+            loadNotesAndRender();
+            alert("Импорт завершён");
+        };
+        reader.readAsText(file);
+    }
+
+    document.getElementById("searchInput").addEventListener("input", () => loadNotesAndRender());
+    document.getElementById("newNoteBtn").onclick = newNote;
+    document.getElementById("deleteNoteBtn").onclick = deleteNote;
+    document.getElementById("exportBtn").onclick = exportJSON;
+    document.getElementById("importBtn").onclick = () => document.getElementById("importInput").click();
+    document.getElementById("importInput").onchange = (e) => importJSON(e.target.files[0]);
+    document.getElementById("titleInput").addEventListener("input", saveCurrentNote);
+    document.getElementById("tagsInput").addEventListener("input", saveCurrentNote);
+    document.getElementById("contentInput").addEventListener("input", saveCurrentNote);
+    // Автосохранение каждые 30 сек
+    setInterval(saveCurrentNote, 30000);
+    function escapeHtml(str) { return str.replace(/[&<>]/g, function(m){if(m==='&') return '&amp;'; if(m==='<') return '&lt;'; if(m==='>') return '&gt;'; return m;}); }
+</script>
+</body>
+</html>
